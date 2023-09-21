@@ -16,9 +16,11 @@ import (
 	"github.com/rwcarlsen/goexif/tiff"
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
+	"gopkg.in/yaml.v2"
 )
 
 const layout = "2006:01:02 15:04:05"
+const defaultConfigPath = "config.yaml"
 
 var picTypes = map[string]bool{
 	"jpg":  true,
@@ -46,9 +48,8 @@ var videoTypes = map[string]bool{
 	"swf": true,
 }
 
-var modelAliasMap = map[string]string{
-	"2304FPN6DC": "Xiaomi13Ultra",
-	"22021211RC": "RedmiK40S",
+type configFile struct {
+	ModelMap map[string]string `yaml:"model_map"`
 }
 
 // time regex to time layout
@@ -67,9 +68,12 @@ type Config struct {
 	Yes         bool
 	Together    bool
 	Mode        string
+	ConfigPath  string
 }
 
 var c = Config{}
+var y = configFile{}
+
 var fileCommand = &cli.Command{
 	Name:  "file",
 	Usage: "copy or move file",
@@ -99,6 +103,14 @@ var fileCommand = &cli.Command{
 			Destination: &c.Mode,
 			Usage:       "copy or move?",
 			Required:    true,
+		},
+		&cli.StringFlag{
+			Name:        "config",
+			Aliases:     []string{"c"},
+			Destination: &c.ConfigPath,
+			Usage:       "yaml config file path",
+			DefaultText: "config.yaml",
+			Required:    false,
 		},
 		&cli.BoolFlag{
 			Name:        "no-skip",
@@ -180,7 +192,24 @@ func contains[T comparable](elems []T, v T) bool {
 	return false
 }
 
+func loadConfigFile() error {
+	if c.ConfigPath == "" {
+		c.ConfigPath = defaultConfigPath
+	}
+	log.Infof("load config file: %s\n", c.ConfigPath)
+	yamlFile, err := os.ReadFile(c.ConfigPath)
+	if err != nil {
+		return err
+	}
+	err = yaml.Unmarshal(yamlFile, &y)
+	if err != nil {
+		panic(err)
+	}
+	return nil
+}
+
 func mediaTool(_ *cli.Context) error {
+	loadConfigFile()
 	imageFileList, _, _, err := getMediaFileList(c.Source)
 	if err != nil {
 		return err
@@ -196,9 +225,13 @@ func mediaTool(_ *cli.Context) error {
 		if err != nil {
 			continue
 		}
-		hit := fmt.Sprintf("Are you sure you want to move %s -> %s?\n", file, newPath)
+		if newPath != "" {
+			newPath = filepath.Join(c.Destination, newPath)
+		}
+
+		hit := fmt.Sprintf("Are you sure you want to %s\n%s\n-> %s?\n", c.Mode, file, newPath)
 		if c.Together {
-			todoMap[file] = filepath.Join(c.Destination, newPath)
+			todoMap[file] = newPath
 		} else {
 			if !c.Yes {
 				if !askForConfirmation(hit) {
@@ -353,19 +386,23 @@ func readExif(file string) string {
 		return ""
 	}
 
-	x, err := exif.Decode(fileHandle)
+	exifData, err := exif.Decode(fileHandle)
 	if err != nil {
 		return ""
 	}
 
-	modelInfo, err := x.Get("Model")
+	modelInfo, err := exifData.Get("Model")
 	if err != nil {
 		return ""
 	}
 	model := getTagString(modelInfo)
-	modelAlias := modelAliasMap[model]
 
-	timeInfo, err := x.Get("DateTimeOriginal")
+	modelAlias := y.ModelMap[model]
+	if modelAlias == "" {
+		modelAlias = model
+	}
+
+	timeInfo, err := exifData.Get("DateTimeOriginal")
 	if err != nil {
 		return ""
 	}
@@ -457,7 +494,6 @@ func getMediaFileList(dir string) ([]string, []string, []string, error) {
 
 func walkDirectory(dirPath string) ([]string, error) {
 	var fileList []string
-	log.Infoln(dirPath)
 	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
 		return nil, err
 	}
@@ -469,6 +505,8 @@ func walkDirectory(dirPath string) ([]string, error) {
 
 		if !file.IsDir() {
 			fileList = append(fileList, path)
+		} else {
+			log.Infof("scanning dir: %s\n", path)
 		}
 
 		return nil
