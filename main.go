@@ -50,6 +50,8 @@ var videoTypes = map[string]bool{
 
 type configFile struct {
 	ModelMap map[string]string `yaml:"model_map"`
+	SkipDir  []string          `yaml:"skip_dir"`
+	SkipFile []string          `yaml:"skip_file"`
 }
 
 // time regex to time layout
@@ -67,6 +69,7 @@ type Config struct {
 	OverWrite   bool
 	Yes         bool
 	Together    bool
+	Debug       bool
 	Mode        string
 	ConfigPath  string
 }
@@ -123,6 +126,23 @@ var fileCommand = &cli.Command{
 			Destination: &c.OverWrite,
 			Usage:       "overwrite if file exists",
 		},
+		&cli.BoolFlag{
+			Name:        "debug",
+			Destination: &c.Debug,
+			Usage:       "set log level to debug",
+		},
+		&cli.BoolFlag{
+			Name:        "yes",
+			Aliases:     []string{"y"},
+			Destination: &c.Yes,
+			Usage:       "yes to all",
+		},
+		&cli.BoolFlag{
+			Name:        "together",
+			Aliases:     []string{"t"},
+			Destination: &c.Together,
+			Usage:       "process files together",
+		},
 	},
 	Action: mediaTool,
 }
@@ -151,7 +171,7 @@ func main() {
 
 	mediaToolApp := &cli.App{
 		Name:    "media tool",
-		Usage:   "你懂的",
+		Usage:   "a tool to mange media files",
 		Version: "v0.0.1",
 		Commands: []*cli.Command{
 			fileCommand,
@@ -208,8 +228,14 @@ func loadConfigFile() error {
 	return nil
 }
 
-func mediaTool(_ *cli.Context) error {
-	loadConfigFile()
+func mediaTool(_ *cli.Context) (err error) {
+	if c.Debug {
+		log.SetLevel(log.DebugLevel)
+	}
+	err = loadConfigFile()
+	if err != nil {
+		return err
+	}
 	imageFileList, _, _, err := getMediaFileList(c.Source)
 	if err != nil {
 		return err
@@ -221,19 +247,24 @@ func mediaTool(_ *cli.Context) error {
 		if err != nil {
 			continue
 		}
+		if newPath != "" {
+			newPath = filepath.Join(c.Destination, newPath)
+		}
 		newPath, err = checkExist(newPath)
 		if err != nil {
 			continue
 		}
-		if newPath != "" {
-			newPath = filepath.Join(c.Destination, newPath)
-		}
 
-		hit := fmt.Sprintf("Are you sure you want to %s\n%s\n-> %s?\n", c.Mode, file, newPath)
+		if c.Dry {
+			log.Infof("file %s -> %s", file, newPath)
+			continue
+		}
 		if c.Together {
+			log.Infof("will %s file %s -> %s later", c.Mode, file, newPath)
 			todoMap[file] = newPath
 		} else {
 			if !c.Yes {
+				hit := fmt.Sprintf("Are you sure you want to %s\n%s\n->\n%s?\n", c.Mode, file, newPath)
 				if !askForConfirmation(hit) {
 					continue
 				}
@@ -245,8 +276,8 @@ func mediaTool(_ *cli.Context) error {
 		}
 	}
 
-	if c.Together {
-		hit := "Are you sure you want to move all files?\n"
+	if c.Together && !c.Dry && len(todoMap) > 0 {
+		hit := fmt.Sprintf("Are you sure you want to %s all files?\n", c.Mode)
 		if !c.Yes {
 			if !askForConfirmation(hit) {
 				return nil
@@ -255,7 +286,7 @@ func mediaTool(_ *cli.Context) error {
 		processFiles(todoMap)
 	}
 
-	log.Infoln("done")
+	log.Infoln("finished")
 
 	return nil
 }
@@ -284,14 +315,14 @@ func processFiles(m map[string]string) {
 	for s, d := range m {
 		err := processOneFile(s, d)
 		if err != nil {
-			log.Errorf("error processing %s: %v\n", s, err)
+			log.Errorf("error processing %s: %v", s, err)
 			continue
 		}
 	}
 }
 
 func processOneFile(source, dest string) error {
-	destinationFile, err := createDestinationFile(dest)
+	destinationFile, err := createDestinationDir(dest)
 	if err != nil {
 		return err
 	}
@@ -318,14 +349,15 @@ func checkExist(dest string) (string, error) {
 			return dest, nil
 		}
 		if !c.NoSkip {
-			return "", fmt.Errorf("skip file %s", dest)
+			log.Infof("file %s already exists, skip", dest)
+			return "", fmt.Errorf("%s already exists", dest)
 		}
 		return generateNewFileName(dest), nil
 	}
 	return dest, nil
 }
 
-func createDestinationFile(destination string) (string, error) {
+func createDestinationDir(destination string) (string, error) {
 	parentDir := filepath.Dir(destination)
 	if err := createParentDir(parentDir); err != nil {
 		return "", err
@@ -352,7 +384,7 @@ func createParentDir(path string) error {
 func generateNewFileName(filename string) string {
 	fileExtension := getFileExtension(filename, true)
 	fileNameWithoutExtension := strings.TrimSuffix(filename, fileExtension)
-	currentTime := time.Now().Format("20060102150405")
+	currentTime := time.Now().Format("20060102_150405")
 	newFileName := fileNameWithoutExtension + "_new_" + currentTime + fileExtension
 	return newFileName
 }
@@ -376,8 +408,26 @@ func processImage(file string) (newPath string, err error) {
 		return
 	}
 
+	//try fstat finally
+	newPath = getModifiedFilePath(file)
+	if newPath != "" {
+		return
+	}
+
 	// If none of the conditions above are met, return an error
 	return "", fmt.Errorf("failed to generate new file name for %s", file)
+}
+
+func getModifiedFilePath(file string) string {
+	fileInfo, err := os.Stat(file)
+	if err != nil {
+		log.Errorf("error getting file info for %s: %v", file, err)
+		return ""
+	}
+	modTime := fileInfo.ModTime().Format("2006/01")
+	fileBase := filepath.Base(file)
+
+	return filepath.Join(modTime, fileBase)
 }
 
 func readExif(file string) string {
@@ -399,7 +449,7 @@ func readExif(file string) string {
 
 	modelAlias := y.ModelMap[model]
 	if modelAlias == "" {
-		modelAlias = model
+		modelAlias = strings.Replace(model, " ", "-", -1)
 	}
 
 	timeInfo, err := exifData.Get("DateTimeOriginal")
@@ -493,6 +543,8 @@ func getMediaFileList(dir string) ([]string, []string, []string, error) {
 }
 
 func walkDirectory(dirPath string) ([]string, error) {
+	log.Infof("scanning dir: %s", dirPath)
+
 	var fileList []string
 	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
 		return nil, err
@@ -502,11 +554,21 @@ func walkDirectory(dirPath string) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		if file.IsDir() {
+			log.Debugf("scanning dir: %s", path)
+			if contains(y.SkipDir, file.Name()) {
+				log.Infof("skip dir: %s", path)
+				return filepath.SkipDir
+			}
 
-		if !file.IsDir() {
-			fileList = append(fileList, path)
 		} else {
-			log.Infof("scanning dir: %s\n", path)
+			log.Debugf("scanning file: %s", path)
+			if contains(y.SkipFile, file.Name()) {
+				log.Infof("skip file: %s", path)
+				return nil
+			}
+			fileList = append(fileList, path)
+
 		}
 
 		return nil

@@ -1,3 +1,12 @@
 model_map:
   2304FPN6DC: Xiaomi13Ultra
   22021211RC: RedmiK40S
+  M2007J1SC: Xiaomi10Ultra
+  2211133C: Xiaomi13
+skip_dir:
+  - __MACOSX
+  - .@__thumb
+  - PHP-Interview-QA-2.0
+  - hekate_ctcaer_6.0.5_Nyx_1.5.4_v2
+skip_file:
+  - .DS_Store
