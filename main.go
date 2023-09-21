@@ -28,6 +28,8 @@ var picTypes = map[string]bool{
 	"png":  true,
 	"gif":  true,
 	"bmp":  true,
+	"heic": true,
+	"arw":  true,
 }
 
 var AudioTypes = map[string]bool{
@@ -193,6 +195,7 @@ func scanExtension(_ *cli.Context) error {
 	for _, file := range fileList {
 		extension := getFileExtension(file, true)
 		if !contains(extensionList, extension) {
+			log.Infof("file %s ,extension: %s", file, extension)
 			extensionList = append(extensionList, extension)
 		}
 	}
@@ -424,10 +427,13 @@ func getModifiedFilePath(file string) string {
 		log.Errorf("error getting file info for %s: %v", file, err)
 		return ""
 	}
-	modTime := fileInfo.ModTime().Format("2006/01")
+	tm := fileInfo.ModTime()
+	modTime := tm.Format("2006/01")
+	date := tm.Format("2006-01-02")
+
 	fileBase := filepath.Base(file)
 
-	return filepath.Join(modTime, fileBase)
+	return filepath.Join(modTime, date, fileBase)
 }
 
 func readExif(file string) string {
@@ -461,10 +467,11 @@ func readExif(file string) string {
 
 	year := tm.Format("2006")
 	month := tm.Format("01")
+	date := tm.Format("2006-01-02")
 
 	fileBase := filepath.Base(file)
 
-	return filepath.Join(modelAlias, year, month, fileBase)
+	return filepath.Join(modelAlias, year, month, date, fileBase)
 }
 
 func getTagString(tag *tiff.Tag) string {
@@ -488,13 +495,14 @@ func matchWxExport(filename string) string {
 		return ""
 	}
 
-	timestampTime := time.Unix(timestampInt, 0)
-	year := timestampTime.Format("2006")
-	month := timestampTime.Format("01")
-	fileBase := filepath.Base(filename)
-	newPath := filepath.Join(year, month, fileBase)
+	tm := time.Unix(timestampInt, 0)
+	year := tm.Format("2006")
+	month := tm.Format("01")
+	date := tm.Format("2006-01-02")
 
-	return newPath
+	fileBase := filepath.Base(filename)
+
+	return filepath.Join(year, month, date, fileBase)
 }
 
 func matchRegex(file string) string {
@@ -506,8 +514,9 @@ func matchRegex(file string) string {
 			t, _ := time.Parse(layout, match)
 			year := t.Format("2006")
 			month := t.Format("01")
+			date := t.Format("2006-01-02")
 			fileBase := filepath.Base(file)
-			return filepath.Join(year, month, fileBase)
+			return filepath.Join(year, month, date, fileBase)
 		}
 	}
 	return ""

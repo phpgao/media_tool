@@ -10,3 +10,4 @@ skip_dir:
   - hekate_ctcaer_6.0.5_Nyx_1.5.4_v2
 skip_file:
   - .DS_Store
+  - .ds_store
