@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -71,93 +70,133 @@ type Config struct {
 }
 
 var c = Config{}
+var fileCommand = &cli.Command{
+	Name:  "file",
+	Usage: "copy or move file",
+	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:        "dry",
+			Destination: &c.Dry,
+			Usage:       "dry run",
+		},
+		&cli.StringFlag{
+			Name:        "source",
+			Aliases:     []string{"s"},
+			Destination: &c.Source,
+			Usage:       "source directory",
+			Required:    true,
+		},
+		&cli.StringFlag{
+			Name:        "dest",
+			Aliases:     []string{"d"},
+			Destination: &c.Destination,
+			Usage:       "destination directory",
+			Required:    true,
+		},
+		&cli.StringFlag{
+			Name:        "mode",
+			Aliases:     []string{"mo"},
+			Destination: &c.Mode,
+			Usage:       "copy or move?",
+			Required:    true,
+		},
+		&cli.BoolFlag{
+			Name:        "no-skip",
+			Destination: &c.NoSkip,
+			Usage:       "no skip if file exists",
+		},
+		&cli.BoolFlag{
+			Name:        "overwrite",
+			Aliases:     []string{"o"},
+			Destination: &c.OverWrite,
+			Usage:       "overwrite if file exists",
+		},
+	},
+	Action: mediaTool,
+}
+
+var extensionCommand = &cli.Command{
+	Name:  "ext",
+	Usage: "get all extensions for a specific dir",
+	Flags: []cli.Flag{
+		&cli.StringFlag{
+			Name:        "dir",
+			Aliases:     []string{"d"},
+			Destination: &c.Destination,
+			Usage:       "the specific directory",
+			Required:    true,
+		},
+	},
+	Action: scanExtension,
+}
 
 func main() {
+	log.SetFormatter(&log.TextFormatter{
+		DisableColors:   false,
+		FullTimestamp:   true,
+		TimestampFormat: "2006-01-02 15:04:05",
+	})
+
 	mediaToolApp := &cli.App{
 		Name:    "media tool",
-		Usage:   "一键整理媒体文件",
+		Usage:   "你懂的",
 		Version: "v0.0.1",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:        "dry",
-				Destination: &c.Dry,
-				Usage:       "dry run",
-			},
-			&cli.StringFlag{
-				Name:        "source",
-				Aliases:     []string{"s"},
-				Destination: &c.Source,
-				Usage:       "source directory",
-				Required:    true,
-			},
-			&cli.StringFlag{
-				Name:        "dest",
-				Aliases:     []string{"d"},
-				Destination: &c.Destination,
-				Usage:       "destination directory",
-				Required:    true,
-			},
-			&cli.StringFlag{
-				Name:        "mode",
-				Aliases:     []string{"mo"},
-				Destination: &c.Mode,
-				Usage:       "copy or move?",
-				Required:    true,
-			},
-			&cli.BoolFlag{
-				Name:        "no-skip",
-				Destination: &c.NoSkip,
-				Usage:       "don't skip file",
-			},
-			&cli.BoolFlag{
-				Name:        "overwrite",
-				Aliases:     []string{"o"},
-				Destination: &c.OverWrite,
-				Usage:       "overwrite if file exists",
-			},
-			&cli.BoolFlag{
-				Name:        "yes",
-				Aliases:     []string{"y"},
-				Destination: &c.Yes,
-				Usage:       "yes to all",
-			},
-			&cli.BoolFlag{
-				Name:        "together",
-				Aliases:     []string{"t"},
-				Destination: &c.Together,
-				Usage:       "process all files at once",
-			},
+		Commands: []*cli.Command{
+			fileCommand,
+			extensionCommand,
 		},
-		Action: mediaTool,
 	}
-
 	if err := mediaToolApp.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}
 
 }
 
-func mediaTool(_ *cli.Context) (err error) {
-	// Get a list of media files from the source directory
-	imageFileList, _, _, err := walk(c.Source)
+func scanExtension(_ *cli.Context) error {
+	fileList, err := walkDirectory(c.Destination)
+	if err != nil {
+		return err
+	}
+	extensionList := make([]string, 0)
+	for _, file := range fileList {
+		extension := getFileExtension(file, true)
+		if !contains(extensionList, extension) {
+			extensionList = append(extensionList, extension)
+		}
+	}
+
+	for _, extension := range extensionList {
+		log.Infoln(extension)
+	}
+	return nil
+}
+
+func contains[T comparable](elems []T, v T) bool {
+	for _, e := range elems {
+		if v == e {
+			return true
+		}
+	}
+	return false
+}
+
+func mediaTool(_ *cli.Context) error {
+	imageFileList, _, _, err := getMediaFileList(c.Source)
 	if err != nil {
 		return err
 	}
 	todoMap := make(map[string]string)
 
-	// Process each image file
 	for _, file := range imageFileList {
 		newPath, err := processImage(file)
 		if err != nil {
-			log.Errorf("error generating new file %s: %v", file, err)
 			continue
 		}
 		newPath, err = checkExist(newPath)
 		if err != nil {
-			log.Errorf("error checking exist %s: %v", newPath, err)
 			continue
 		}
-		hit := fmt.Sprintf("Are you sure you want to move %s to %s?\n", file, newPath)
+		hit := fmt.Sprintf("Are you sure you want to move %s -> %s?\n", file, newPath)
 		if c.Together {
 			todoMap[file] = filepath.Join(c.Destination, newPath)
 		} else {
@@ -168,14 +207,13 @@ func mediaTool(_ *cli.Context) (err error) {
 			}
 			err := processOneFile(file, newPath)
 			if err != nil {
-				log.Errorf("error processing %s: %v\n", file, err)
 				continue
 			}
 		}
-
 	}
+
 	if c.Together {
-		hit := fmt.Sprintf("Are you sure you want to move all files?\n")
+		hit := "Are you sure you want to move all files?\n"
 		if !c.Yes {
 			if !askForConfirmation(hit) {
 				return nil
@@ -184,16 +222,15 @@ func mediaTool(_ *cli.Context) (err error) {
 		processFiles(todoMap)
 	}
 
-	log.Infof("done\n")
+	log.Infoln("done")
 
 	return nil
 }
 
-func askForConfirmation(s string) bool {
+func askForConfirmation(prompt string) bool {
 	reader := bufio.NewReader(os.Stdin)
-
 	for {
-		fmt.Printf("%s [y/n]: ", s)
+		fmt.Printf("%s [y/n]: ", prompt)
 
 		response, err := reader.ReadString('\n')
 		if err != nil {
@@ -221,24 +258,24 @@ func processFiles(m map[string]string) {
 }
 
 func processOneFile(source, dest string) error {
-	d, err := createDestinationFile(dest)
+	destinationFile, err := createDestinationFile(dest)
 	if err != nil {
 		return err
 	}
+
 	switch c.Mode {
 	case "copy":
-		log.Printf("%s is being copied to %s", source, d)
-		err = copyFile(source, d)
+		err = copyFile(source, destinationFile)
 		if err != nil {
 			return err
 		}
 	case "move":
-		log.Printf("%s is being moved to %s", source, d)
-		err = moveFile(source, d)
+		err = moveFile(source, destinationFile)
 		if err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -255,13 +292,12 @@ func checkExist(dest string) (string, error) {
 	return dest, nil
 }
 
-func createDestinationFile(dst string) (string, error) {
-	parentDir := filepath.Dir(dst)
+func createDestinationFile(destination string) (string, error) {
+	parentDir := filepath.Dir(destination)
 	if err := createParentDir(parentDir); err != nil {
 		return "", err
 	}
-
-	return dst, nil
+	return destination, nil
 }
 
 func fileExists(path string) bool {
@@ -270,36 +306,45 @@ func fileExists(path string) bool {
 }
 
 func createParentDir(path string) error {
+	// Check if the directory already exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
+		// Create the directory and set permissions
 		if err := os.MkdirAll(path, 0755); err != nil {
 			return err
 		}
 	}
 	return nil
 }
+
 func generateNewFileName(filename string) string {
-	ext := filepath.Ext(filename)
-	name := strings.TrimSuffix(filename, ext)
-	return name + "_new_" + time.Now().Format("20060102150405") + ext
+	fileExtension := getFileExtension(filename, true)
+	fileNameWithoutExtension := strings.TrimSuffix(filename, fileExtension)
+	currentTime := time.Now().Format("20060102150405")
+	newFileName := fileNameWithoutExtension + "_new_" + currentTime + fileExtension
+	return newFileName
 }
 
 func processImage(file string) (newPath string, err error) {
+	// Check if the file has any EXIF data
 	newPath = readExif(file)
 	if newPath != "" {
 		return
 	}
 
+	// Check if the file matches the wxExport pattern
 	newPath = matchWxExport(file)
 	if newPath != "" {
 		return
 	}
 
+	// Check if the file matches any regex pattern
 	newPath = matchRegex(file)
 	if newPath != "" {
 		return
 	}
 
-	return "", errors.New("failed to generate new file name")
+	// If none of the conditions above are met, return an error
+	return "", fmt.Errorf("failed to generate new file name for %s", file)
 }
 
 func readExif(file string) string {
@@ -340,94 +385,107 @@ func getTagString(tag *tiff.Tag) string {
 	return strings.Trim(tagString, "\"")
 }
 
-func matchWxExport(filename string) (newPath string) {
+func matchWxExport(filename string) string {
 	pattern := `mmexport(1\d{9})`
 	regex := regexp.MustCompile(pattern)
 	matches := regex.FindStringSubmatch(filename)
 
-	if len(matches) > 0 {
-		timestamp := matches[1]
-		timestampInt, err := strconv.ParseInt(timestamp, 10, 64)
-		if err != nil {
-			log.Errorf("error parsing timestamp %s: %v", timestamp, err)
-			return ""
-		}
-		timestampTime := time.Unix(timestampInt, 0)
-		year := timestampTime.Format("2006")
-		month := timestampTime.Format("01")
-		fileBase := filepath.Base(filename)
-		newPath = filepath.Join(year, month, fileBase)
+	if len(matches) == 0 {
+		return ""
 	}
-	return
+
+	timestamp := matches[1]
+	timestampInt, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		log.Errorf("error parsing timestamp %s: %v", timestamp, err)
+		return ""
+	}
+
+	timestampTime := time.Unix(timestampInt, 0)
+	year := timestampTime.Format("2006")
+	month := timestampTime.Format("01")
+	fileBase := filepath.Base(filename)
+	newPath := filepath.Join(year, month, fileBase)
+
+	return newPath
 }
 
 func matchRegex(file string) string {
-	// Iterate over the regexTime map
-	for regexPattern, timeLayout := range regexTime {
-		// Compile the regex pattern
-		regex := regexp.MustCompile(regexPattern)
-		// Find the first match in the file name
+	for pattern, layout := range regexTime {
+		regex := regexp.MustCompile(pattern)
 		matches := regex.FindStringSubmatch(file)
-		// If a match is found
 		if len(matches) > 0 {
 			match := matches[0]
-			// Parse the matched string as time
-			tm, _ := time.Parse(timeLayout, match)
-			// Extract the year and month from the parsed time
-			year := tm.Format("2006")
-			month := tm.Format("01")
-			// Get the base file name
+			t, _ := time.Parse(layout, match)
+			year := t.Format("2006")
+			month := t.Format("01")
 			fileBase := filepath.Base(file)
-			// Return the path with year, month, and file name
 			return filepath.Join(year, month, fileBase)
 		}
 	}
-	// If no match is found, return an empty string
 	return ""
 }
 
-func walk(dir string) (imageFiles, videoFiles, audioFiles []string, err error) {
-	log.Debugf("start scanning %s", dir)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
+func getMediaFileList(dir string) ([]string, []string, []string, error) {
+	imageFiles := make([]string, 0)
+	videoFiles := make([]string, 0)
+	audioFiles := make([]string, 0)
+
+	fileList, err := walkDirectory(dir)
+	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	err = filepath.WalkDir(dir, func(path string, file fs.DirEntry, err error) error {
+	for _, file := range fileList {
+		ext := getFileExtension(file, false)
+
+		if picTypes[ext] {
+			imageFiles = append(imageFiles, file)
+		}
+
+		if videoTypes[ext] {
+			videoFiles = append(videoFiles, file)
+		}
+
+		if AudioTypes[ext] {
+			audioFiles = append(audioFiles, file)
+		}
+	}
+
+	return imageFiles, videoFiles, audioFiles, nil
+}
+
+func walkDirectory(dirPath string) ([]string, error) {
+	var fileList []string
+	log.Infoln(dirPath)
+	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+		return nil, err
+	}
+
+	err := filepath.WalkDir(dirPath, func(path string, file fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		if file.IsDir() {
-			return nil
-		}
-
-		ext := getFileExtension(file.Name())
-
-		if isPic := picTypes[ext]; isPic {
-			imageFiles = append(imageFiles, path)
-		}
-
-		if isVideo := videoTypes[ext]; isVideo {
-			videoFiles = append(videoFiles, path)
-		}
-
-		if isAudio := AudioTypes[ext]; isAudio {
-			audioFiles = append(audioFiles, path)
+		if !file.IsDir() {
+			fileList = append(fileList, path)
 		}
 
 		return nil
 	})
 
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
-	return
+	return fileList, nil
 }
 
-func getFileExtension(path string) string {
+func getFileExtension(path string, needDot bool) string {
 	extension := filepath.Ext(path)
-	extension = strings.TrimPrefix(extension, ".")
+	if !needDot {
+		extension = strings.TrimPrefix(extension, ".")
+	}
 	return strings.ToLower(extension)
 }
 
